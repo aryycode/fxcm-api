@@ -14,8 +14,11 @@ class ForexRequest(BaseModel):
     connection: str = "Real"
     instrument: str = "GBP/USD"
     candles_d1: Optional[int] = 60
-    candles_h1: Optional[int] = 1200
+    candles_h4: Optional[int] = 100
+    candles_h1: Optional[int] = 150
     candles_m15: Optional[int] = 300
+    candles_m5: Optional[int] = 400
+    candles_m1: Optional[int] = 750
 
 def on_session_status_changed(session, status):
     print(f"Session: {session}, Status: {status}")
@@ -69,11 +72,14 @@ async def get_forex_data(request: ForexRequest):
                 "instrument": request.instrument,
                 "timestamp": datetime.datetime.now().isoformat(),
                 "daily": get_history(fx, request.instrument, "D1", request.candles_d1),
+                "H4": get_history(fx, request.instrument, "H4", request.candles_h4),
                 "H1": get_history(fx, request.instrument, "H1", request.candles_h1),
-                "M15": get_history(fx, request.instrument, "m15", request.candles_m15)
+                "M15": get_history(fx, request.instrument, "m15", request.candles_m15),
+                "M5": get_history(fx, request.instrument, "m5", request.candles_m5),
+                "M1": get_history(fx, request.instrument, "m1", request.candles_m1)
             }
 
-            print(f"Successfully fetched {len(data['daily'])} daily, {len(data['H1'])} H1, and {len(data['M15'])} M15 candles")
+            print(f"Successfully fetched {len(data['daily'])} daily, {len(data['H4'])} H4, {len(data['H1'])} H1, {len(data['M15'])} M15, {len(data['M5'])} M5, and {len(data['M1'])} M1 candles")
             
             return {
                 "status": "success",

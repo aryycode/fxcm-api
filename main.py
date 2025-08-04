@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from forexconnect import ForexConnect
@@ -29,7 +30,6 @@ def on_session_status_changed(session, status):
     print(f"Session: {session}, Status: {status}")
 
 def get_history(fx, instrument, timeframe, count):
-    """Mengambil data history dari ForexConnect"""
     try:
         history = fx.get_history(instrument, timeframe, quotes_count=count)
         data = []
@@ -54,24 +54,17 @@ async def root():
 
 @app.post("/get-forex-data")
 async def get_forex_data(request: ForexRequest):
-    """Ambil data forex multi-timeframe"""
     try:
         with ForexConnect() as fx:
-            print(f"Connecting to {request.connection} account...")
-            
             fx.login(
-                request.username, 
-                request.password, 
-                request.url, 
-                request.connection, 
-                None, 
-                None, 
+                request.username,
+                request.password,
+                request.url,
+                request.connection,
+                None,
+                None,
                 on_session_status_changed
             )
-            print("Login successful!")
-
-            print(f"Fetching data for {request.instrument}...")
-            
             data = {
                 "instrument": request.instrument,
                 "timestamp": datetime.datetime.now().isoformat(),
@@ -82,27 +75,20 @@ async def get_forex_data(request: ForexRequest):
                 "M5": get_history(fx, request.instrument, "m5", request.candles_m5),
                 "M1": get_history(fx, request.instrument, "m1", request.candles_m1)
             }
-
             return {"status": "success", "data": data}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch forex data: {str(e)}")
-    
     finally:
         try:
             fx.logout()
-            print("Logged out successfully")
-        except Exception as e:
-            print(f"Error during logout: {str(e)}")
+        except:
+            pass
 
 # ==========================
-# Forex Factory Calendar Section (Perbaikan)
+# Forex Factory Scraper
 # ==========================
 @app.get("/get-economic-calendar")
 async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
-    """
-    Ambil data kalender ekonomi dari Forex Factory (via JS object)
-    """
     try:
         scraper = cloudscraper.create_scraper(delay=10, browser='chrome')
         url = "https://www.forexfactory.com/calendar"
@@ -112,30 +98,34 @@ async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: 
         }
         html = scraper.get(url, headers=headers).text
 
+        # Save HTML for debug
+        os.makedirs("debug", exist_ok=True)
+        with open("debug/forexfactory.html", "w", encoding="utf-8") as f:
+            f.write(html)
+
         if "calendarComponentStates" not in html:
-            print(html[:2000])  # Debug: lihat jika Cloudflare block
-            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender (Cloudflare block?)")
+            return {"status": "error", "message": "Cloudflare or no data", "debug_file": "debug/forexfactory.html"}
 
         match = re.search(r'window\.calendarComponentStates\s*=\s*({.*?});', html, re.S)
         if not match:
-            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender")
+            return {"status": "error", "message": "Regex gagal", "debug_file": "debug/forexfactory.html"}
 
         raw_json = match.group(1)
-
-        # Ubah key angka ke string
         raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)
 
-        # Ambil hanya bagian { "1": { ... } }
+        # Save raw JSON for debug
+        with open("debug/raw_calendar.json", "w", encoding="utf-8") as f:
+            f.write(raw_json)
+
         try:
             parsed = json.loads(raw_json)
-            if "1" not in parsed:
-                raise ValueError("Data kalender tidak ada di key '1'")
-            calendar_data = parsed["1"]  # hanya ambil data hari ini
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=500, detail=f"Gagal parse JSON: {str(e)}")
+        except Exception as e:
+            return {"status": "error", "message": f"Parse JSON gagal: {str(e)}", "debug_file": "debug/raw_calendar.json"}
 
+        if "1" not in parsed:
+            return {"status": "error", "message": "Key '1' tidak ada", "debug_file": "debug/raw_calendar.json"}
 
-        data = json.loads(raw_json)
+        calendar_data = parsed["1"]
         today_events = []
         for day in calendar_data.get("days", []):
             for ev in day.get("events", []):
@@ -152,11 +142,10 @@ async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: 
                         "date": ev.get("date", "")
                     })
 
-
-        return {"status": "success", "events": today_events}
+        return {"status": "success", "events": today_events, "debug_files": ["debug/forexfactory.html", "debug/raw_calendar.json"]}
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch economic calendar: {str(e)}")
+        return {"status": "error", "message": f"Exception: {str(e)}"}
 
 @app.get("/health")
 async def health_check():

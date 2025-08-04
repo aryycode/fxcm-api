@@ -118,14 +118,26 @@ async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: 
 
         match = re.search(r'window\.calendarComponentStates\s*=\s*({.*?});', html, re.S)
         if not match:
-            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender (regex gagal)")
+            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender")
 
         raw_json = match.group(1)
+
+        # Ubah key angka ke string
         raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)
+
+        # Ambil hanya bagian { "1": { ... } }
+        try:
+            parsed = json.loads(raw_json)
+            if "1" not in parsed:
+                raise ValueError("Data kalender tidak ada di key '1'")
+            calendar_data = parsed["1"]  # hanya ambil data hari ini
+        except json.JSONDecodeError as e:
+            raise HTTPException(status_code=500, detail=f"Gagal parse JSON: {str(e)}")
+
 
         data = json.loads(raw_json)
         today_events = []
-        for day in data["1"]["days"]:
+        for day in calendar_data.get("days", []):
             for ev in day.get("events", []):
                 event_currency = ev.get("currency", "")
                 event_impact = ev.get("impactTitle", "")
@@ -139,6 +151,7 @@ async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: 
                         "actual": ev.get("actual", ""),
                         "date": ev.get("date", "")
                     })
+
 
         return {"status": "success", "events": today_events}
 

@@ -99,12 +99,345 @@ def clean_json_string(raw_json):
         if raw_json.endswith(";"):
             raw_json = raw_json[:-1]
         
-        # Hapus trailing comma sebelum closing brace
+        # Hapus komentar JavaScript jika ada
+        raw_json = re.sub(r'//.*?
+
+@app.get("/get-economic-calendar")
+async def get_economic_calendar(currencies: Optional[str] = None, impact: str = "High"):
+    try:
+        # Convert currencies string to list if provided
+        currency_list = currencies.split(',') if currencies else None
+        
+        # Create scraper with better settings
+        scraper = cloudscraper.create_scraper(
+            delay=10, 
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+        )
+        
+        url = "https://www.forexfactory.com/calendar"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+        
+        print("Fetching ForexFactory calendar...")
+        response = scraper.get(url, headers=headers, timeout=30)
+        html = response.text
+        
+        # Debug: print part of HTML to see what we got
+        print(f"HTML length: {len(html)}")
+        print(f"Response status: {response.status_code}")
+        
+        # Try multiple patterns to find calendar data - improved patterns
+        patterns = [
+            r'window\.calendarComponentStates\s*=\s*(\{.*?\n.*?\});',  # Multi-line pattern
+            r'window\.calendarComponentStates\s*=\s*(\{.*?\});',       # Single line
+            r'calendarComponentStates\s*=\s*(\{.*?\});',               # Without window
+        ]
+        
+        match = None
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL | re.MULTILINE)
+            if match:
+                print(f"Found match with pattern: {pattern}")
+                raw_json = match.group(1)
+                break
+        
+        if not match:
+            # More aggressive pattern - look for calendarComponentStates assignment
+            # Find the start of the assignment
+            start_pattern = r'window\.calendarComponentStates\s*='
+            start_match = re.search(start_pattern, html)
+            
+            if start_match:
+                start_pos = start_match.end()
+                
+                # Find the opening brace
+                brace_start = html.find('{', start_pos)
+                if brace_start == -1:
+                    raise HTTPException(status_code=500, detail="Tidak dapat menemukan opening brace untuk data kalender")
+                
+                # Find the matching closing brace
+                brace_count = 0
+                pos = brace_start
+                
+                while pos < len(html):
+                    char = html[pos]
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            # Found matching closing brace
+                            raw_json = html[brace_start:pos + 1]
+                            print(f"Extracted JSON using brace matching, length: {len(raw_json)}")
+                            break
+                    pos += 1
+                else:
+                    raise HTTPException(status_code=500, detail="Tidak dapat menemukan closing brace untuk data kalender")
+            else:
+                raise HTTPException(status_code=500, detail="Tidak dapat menemukan window.calendarComponentStates")
+        
+        print(f"Raw JSON length: {len(raw_json)}")
+        print(f"Raw JSON preview: {raw_json[:200]}...")
+        
+        # Clean the JSON string
+        cleaned_json = clean_json_string(raw_json)
+        print(f"Cleaned JSON length: {len(cleaned_json)}")
+        print(f"Cleaned JSON preview: {cleaned_json[:200]}...")
+        
+        # Parse JSON
+        try:
+            data = json.loads(cleaned_json)
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error: {e}")
+            print(f"Error at position: {e.pos}")
+            print(f"Context around error: {cleaned_json[max(0, e.pos-50):e.pos+50]}")
+            raise HTTPException(status_code=500, detail=f"Error parsing JSON: {str(e)}")
+        
+        print(f"Parsed data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+        
+        # Find calendar data - try different possible keys
+        calendar_data = None
+        possible_keys = ["1", "0", "today", "calendar"]
+        
+        for key in possible_keys:
+            if key in data:
+                calendar_data = data[key]
+                print(f"Found calendar data with key: {key}")
+                break
+        
+        if not calendar_data:
+            # If no specific key found, use the whole data if it looks like calendar data
+            if isinstance(data, dict) and any(key in str(data) for key in ["days", "events", "currency"]):
+                calendar_data = data
+                print("Using entire data structure as calendar data")
+            else:
+                available_keys = list(data.keys()) if isinstance(data, dict) else "No keys available"
+                raise HTTPException(status_code=500, detail=f"Data kalender tidak ditemukan. Available keys: {available_keys}")
+        
+        # Extract events
+        events = []
+        days_data = calendar_data.get("days", [])
+        
+        if not days_data and isinstance(calendar_data, list):
+            days_data = calendar_data
+        
+        print(f"Processing {len(days_data)} days of data")
+        
+        for day in days_data:
+            if not isinstance(day, dict):
+                continue
+                
+            day_events = day.get("events", [])
+            day_date = day.get("date", "")
+            
+            print(f"Processing day {day_date} with {len(day_events)} events")
+            
+            for ev in day_events:
+                if not isinstance(ev, dict):
+                    continue
+                
+                event_impact = ev.get("impactTitle", ev.get("impact", "")).lower()
+                event_currency = ev.get("currency", "")
+                
+                # Filter by impact
+                if impact.lower() not in event_impact:
+                    continue
+                
+                # Filter by currency if specified
+                if currency_list and event_currency not in currency_list:
+                    continue
+                
+                events.append({
+                    "date": day_date,
+                    "time": ev.get("timeLabel", ev.get("time", "")),
+                    "currency": event_currency,
+                    "impact": ev.get("impactTitle", ev.get("impact", "")),
+                    "event": ev.get("name", ev.get("title", "")),
+                    "forecast": ev.get("forecast", ""),
+                    "actual": ev.get("actual", ""),
+                    "previous": ev.get("previous", "")
+                })
+        
+        print(f"Found {len(events)} matching events")
+        
+        return {
+            "status": "success", 
+            "events": events,
+            "total_events": len(events),
+            "filters": {
+                "currencies": currency_list,
+                "impact": impact
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch economic calendar: {str(e)}")
+
+@app.get("/debug-calendar")
+async def debug_calendar():
+    """
+    Endpoint untuk debugging ekstraksi data kalender
+    """
+    try:
+        scraper = cloudscraper.create_scraper(delay=10)
+        url = "https://www.forexfactory.com/calendar"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = scraper.get(url, headers=headers, timeout=30)
+        html = response.text
+        
+        # Find calendarComponentStates
+        start_pattern = r'window\.calendarComponentStates\s*='
+        start_match = re.search(start_pattern, html)
+        
+        if not start_match:
+            return {"status": "error", "error": "calendarComponentStates not found"}
+        
+        start_pos = start_match.end()
+        
+        # Find context around the assignment
+        context_start = max(0, start_match.start() - 100)
+        context_end = min(len(html), start_pos + 2000)
+        context = html[context_start:context_end]
+        
+        # Try to extract the JSON part
+        brace_start = html.find('{', start_pos)
+        if brace_start == -1:
+            return {"status": "error", "error": "Opening brace not found", "context": context}
+        
+        # Find matching closing brace
+        brace_count = 0
+        pos = brace_start
+        
+        while pos < len(html) and pos - brace_start < 50000:  # Limit search to reasonable size
+            char = html[pos]
+            if char == '{':
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    break
+            pos += 1
+        
+        if brace_count != 0:
+            return {"status": "error", "error": "Matching closing brace not found", "context": context}
+        
+        raw_json = html[brace_start:pos + 1]
+        
+        # Try to clean and parse
+        cleaned_json = clean_json_string(raw_json)
+        
+        try:
+            parsed_data = json.loads(cleaned_json)
+            data_keys = list(parsed_data.keys()) if isinstance(parsed_data, dict) else "Not a dict"
+            
+            # Look for calendar structure
+            calendar_info = {}
+            if isinstance(parsed_data, dict):
+                for key, value in parsed_data.items():
+                    if isinstance(value, dict) and 'days' in value:
+                        days = value.get('days', [])
+                        events_count = sum(len(day.get('events', [])) for day in days if isinstance(day, dict))
+                        calendar_info[key] = {
+                            'days_count': len(days),
+                            'events_count': events_count
+                        }
+            
+            return {
+                "status": "success",
+                "raw_json_length": len(raw_json),
+                "cleaned_json_length": len(cleaned_json),
+                "data_keys": data_keys,
+                "calendar_info": calendar_info,
+                "raw_preview": raw_json[:500],
+                "cleaned_preview": cleaned_json[:500]
+            }
+            
+        except json.JSONDecodeError as e:
+            return {
+                "status": "json_error",
+                "error": str(e),
+                "error_pos": e.pos,
+                "raw_json_length": len(raw_json),
+                "cleaned_json_length": len(cleaned_json),
+                "context_around_error": cleaned_json[max(0, e.pos-100):e.pos+100],
+                "raw_preview": raw_json[:500],
+                "cleaned_preview": cleaned_json[:500]
+            }
+        
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@app.get("/test-scraper")
+async def test_scraper():
+    """
+    Endpoint untuk testing scraper tanpa parsing data
+    """
+    try:
+        scraper = cloudscraper.create_scraper(delay=10)
+        url = "https://www.forexfactory.com/calendar"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = scraper.get(url, headers=headers, timeout=30)
+        
+        # Look for calendar data patterns
+        patterns_found = {}
+        patterns = [
+            r'window\.calendarComponentStates',
+            r'calendarComponentStates',
+            r'calendar.*data',
+            r'events.*\[',
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, response.text, re.IGNORECASE)
+            patterns_found[pattern] = len(matches)
+        
+        return {
+            "status": "success",
+            "response_code": response.status_code,
+            "html_length": len(response.text),
+            "patterns_found": patterns_found,
+            "html_preview": response.text[:1000]
+        }
+        
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=9898), '', raw_json, flags=re.MULTILINE)
+        raw_json = re.sub(r'/\*.*?\*/', '', raw_json, flags=re.DOTALL)
+        
+        # Hapus trailing comma sebelum closing brace/bracket
         raw_json = re.sub(r',(\s*[}\]])', r'\1', raw_json)
         
-        # Convert numeric keys ke string keys
-        # Pattern yang lebih spesifik untuk menghindari false positive
+        # Convert numeric keys ke string keys dengan pattern yang lebih spesifik
+        # Hanya convert angka yang benar-benar sebagai key object
         raw_json = re.sub(r'(?<=[{,\s])(\d+)(?=\s*:)', r'"\1"', raw_json)
+        
+        # Fix undefined values yang mungkin ada
+        raw_json = re.sub(r':\s*undefined\b', ': null', raw_json)
+        
+        # Fix function calls atau expressions yang tidak valid dalam JSON
+        raw_json = re.sub(r':\s*new\s+Date\([^)]*\)', ': null', raw_json)
         
         # Pastikan string berakhir dengan }
         if not raw_json.endswith('}'):
@@ -158,34 +491,55 @@ async def get_economic_calendar(currencies: Optional[str] = None, impact: str = 
         print(f"HTML length: {len(html)}")
         print(f"Response status: {response.status_code}")
         
-        # Try multiple patterns to find calendar data
+        # Try multiple patterns to find calendar data - improved patterns
         patterns = [
-            r'window\.calendarComponentStates\s*=\s*(\{[^;]+\});',
-            r'calendarComponentStates\s*=\s*(\{[^;]+\});',
-            r'window\.calendarComponentStates\s*=\s*(\{.*?\});',
-            r'var\s+calendarComponentStates\s*=\s*(\{[^;]+\});'
+            r'window\.calendarComponentStates\s*=\s*(\{.*?\n.*?\});',  # Multi-line pattern
+            r'window\.calendarComponentStates\s*=\s*(\{.*?\});',       # Single line
+            r'calendarComponentStates\s*=\s*(\{.*?\});',               # Without window
         ]
         
         match = None
         for pattern in patterns:
-            match = re.search(pattern, html, re.DOTALL)
+            match = re.search(pattern, html, re.DOTALL | re.MULTILINE)
             if match:
                 print(f"Found match with pattern: {pattern}")
+                raw_json = match.group(1)
                 break
         
         if not match:
-            # Fallback: try to find any large JSON-like structure
-            json_pattern = r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}'
-            matches = re.findall(json_pattern, html)
-            large_json = max(matches, key=len) if matches else None
+            # More aggressive pattern - look for calendarComponentStates assignment
+            # Find the start of the assignment
+            start_pattern = r'window\.calendarComponentStates\s*='
+            start_match = re.search(start_pattern, html)
             
-            if large_json and len(large_json) > 1000:  # Assume calendar data is substantial
-                raw_json = large_json
-                print("Using fallback JSON extraction")
+            if start_match:
+                start_pos = start_match.end()
+                
+                # Find the opening brace
+                brace_start = html.find('{', start_pos)
+                if brace_start == -1:
+                    raise HTTPException(status_code=500, detail="Tidak dapat menemukan opening brace untuk data kalender")
+                
+                # Find the matching closing brace
+                brace_count = 0
+                pos = brace_start
+                
+                while pos < len(html):
+                    char = html[pos]
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            # Found matching closing brace
+                            raw_json = html[brace_start:pos + 1]
+                            print(f"Extracted JSON using brace matching, length: {len(raw_json)}")
+                            break
+                    pos += 1
+                else:
+                    raise HTTPException(status_code=500, detail="Tidak dapat menemukan closing brace untuk data kalender")
             else:
-                raise HTTPException(status_code=500, detail="Tidak dapat menemukan data kalender di halaman")
-        else:
-            raw_json = match.group(1)
+                raise HTTPException(status_code=500, detail="Tidak dapat menemukan window.calendarComponentStates")
         
         print(f"Raw JSON length: {len(raw_json)}")
         print(f"Raw JSON preview: {raw_json[:200]}...")

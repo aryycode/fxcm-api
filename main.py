@@ -3,10 +3,15 @@ from pydantic import BaseModel
 from forexconnect import ForexConnect
 import datetime
 import json
-from typing import Optional
+from typing import Optional, List
+import cloudscraper
+from bs4 import BeautifulSoup
 
-app = FastAPI(title="Forex Data API", description="API untuk mengambil data forex multi timeframe")
+app = FastAPI(title="Forex Data & Calendar API", description="Ambil data forex multi-timeframe + kalender ekonomi")
 
+# ==========================
+# Forex Data Section
+# ==========================
 class ForexRequest(BaseModel):
     username: str
     password: str
@@ -42,7 +47,10 @@ def get_history(fx, instrument, timeframe, count):
 
 @app.get("/")
 async def root():
-    return {"message": "Forex Data API is running", "endpoints": ["/get-forex-data"]}
+    return {
+        "message": "Forex Data & Calendar API is running",
+        "endpoints": ["/get-forex-data", "/get-economic-calendar"]
+    }
 
 @app.post("/get-forex-data")
 async def get_forex_data(request: ForexRequest):
@@ -53,7 +61,6 @@ async def get_forex_data(request: ForexRequest):
         with ForexConnect() as fx:
             print(f"Connecting to {request.connection} account...")
             
-            # Login
             fx.login(
                 request.username, 
                 request.password, 
@@ -67,7 +74,6 @@ async def get_forex_data(request: ForexRequest):
 
             print(f"Fetching data for {request.instrument}...")
             
-            # Ambil data untuk semua timeframe
             data = {
                 "instrument": request.instrument,
                 "timestamp": datetime.datetime.now().isoformat(),
@@ -79,12 +85,9 @@ async def get_forex_data(request: ForexRequest):
                 "M1": get_history(fx, request.instrument, "m1", request.candles_m1)
             }
 
-            print(f"Successfully fetched {len(data['daily'])} daily, {len(data['H4'])} H4, {len(data['H1'])} H1, {len(data['M15'])} M15, {len(data['M5'])} M5, and {len(data['M1'])} M1 candles")
+            print(f"Fetched data for {request.instrument}")
             
-            return {
-                "status": "success",
-                "data": data
-            }
+            return {"status": "success", "data": data}
 
     except Exception as e:
         print(f"Error: {str(e)}")
@@ -97,9 +100,53 @@ async def get_forex_data(request: ForexRequest):
         except Exception as e:
             print(f"Error during logout: {str(e)}")
 
+# ==========================
+# Forex Factory Scraper Section
+# ==========================
+@app.get("/get-economic-calendar")
+async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
+    """
+    Scrape kalender ekonomi dari Forex Factory
+    :param currencies: List mata uang yang difilter (contoh: ["USD", "EUR"])
+    :param impact: Level impact (Low, Medium, High)
+    """
+    try:
+        scraper = cloudscraper.create_scraper()
+        url = "https://www.forexfactory.com/calendar"
+        html = scraper.get(url).text
+        soup = BeautifulSoup(html, 'html.parser')
+
+        events = []
+        rows = soup.select('tr.calendar__row')
+        for row in rows:
+            time = row.select_one('td.calendar__time')
+            currency = row.select_one('td.calendar__currency')
+            impact_elem = row.select_one('td.calendar__impact span')
+            event = row.select_one('td.calendar__event')
+            forecast = row.select_one('td.calendar__forecast')
+            actual = row.select_one('td.calendar__actual')
+
+            if currency and impact_elem:
+                event_impact = impact_elem.get('title', '')  # impact level dari attribute
+                event_currency = currency.text.strip()
+                if impact in event_impact and (not currencies or event_currency in currencies):
+                    events.append({
+                        "time": time.text.strip() if time else "",
+                        "currency": event_currency,
+                        "impact": event_impact,
+                        "event": event.text.strip() if event else "",
+                        "forecast": forecast.text.strip() if forecast else "",
+                        "actual": actual.text.strip() if actual else ""
+                    })
+
+        return {"status": "success", "events": events}
+
+    except Exception as e:
+        print(f"Error scraping Forex Factory: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch economic calendar: {str(e)}")
+
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
 
 if __name__ == "__main__":

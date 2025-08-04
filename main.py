@@ -99,14 +99,54 @@ def clean_json_string(raw_json):
         if raw_json.endswith(";"):
             raw_json = raw_json[:-1]
         
-        # Hapus trailing comma sebelum closing brace/bracket
+        # Hapus single line comments
+        lines = raw_json.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # Remove // comments but preserve strings
+            in_string = False
+            escaped = False
+            comment_pos = -1
+            
+            for i, char in enumerate(line):
+                if escaped:
+                    escaped = False
+                    continue
+                if char == '\\':
+                    escaped = True
+                    continue
+                if char == '"' and not escaped:
+                    in_string = not in_string
+                elif not in_string and char == '/' and i + 1 < len(line) and line[i + 1] == '/':
+                    comment_pos = i
+                    break
+            
+            if comment_pos >= 0:
+                line = line[:comment_pos].rstrip()
+            cleaned_lines.append(line)
+        
+        raw_json = '\n'.join(cleaned_lines)
+        
+        # Remove block comments /* */
+        raw_json = re.sub(r'/\*.*?\*/', '', raw_json, flags=re.DOTALL)
+        
+        # Fix trailing commas
         raw_json = re.sub(r',(\s*[}\]])', r'\1', raw_json)
         
-        # Convert numeric keys ke string keys
-        raw_json = re.sub(r'(?<=[{,\s])(\d+)(?=\s*:)', r'"\1"', raw_json)
+        # Fix numeric keys - more precise pattern
+        raw_json = re.sub(r'(?<=[{\s,\n])(\d+)(\s*:)', r'"\1"\2', raw_json)
         
-        # Fix undefined values
+        # Fix undefined, null, true, false values
         raw_json = re.sub(r':\s*undefined\b', ': null', raw_json)
+        raw_json = re.sub(r':\s*True\b', ': true', raw_json)
+        raw_json = re.sub(r':\s*False\b', ': false', raw_json)
+        
+        # Fix single quotes to double quotes for strings (be careful with content)
+        # Only replace single quotes that are clearly string delimiters
+        raw_json = re.sub(r"(?<=[:\s,\[])'([^']*)'(?=[,\s\]\}])", r'"\1"', raw_json)
+        
+        # Remove any trailing commas or semicolons
+        raw_json = re.sub(r',\s*([}\]])', r'\1', raw_json)
         
         return raw_json
         

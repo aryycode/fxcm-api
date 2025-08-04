@@ -90,39 +90,45 @@ async def get_forex_data(request: ForexRequest):
 @app.get("/get-economic-calendar")
 async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
     """
-    Ambil data kalender ekonomi dari ForexFactory (dari script JSON di halaman).
-    Filter by currencies (contoh: USD, GBP) dan impact level (Low, Medium, High).
+    Ambil data kalender ekonomi ForexFactory dari window.calendarComponentStates
     """
     try:
-        scraper = cloudscraper.create_scraper()
+        scraper = cloudscraper.create_scraper(delay=10, browser='chrome')
         url = "https://www.forexfactory.com/calendar"
-        html = scraper.get(url).text
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        html = scraper.get(url, headers=headers).text
 
-        # Cari JSON dari script menggunakan regex
+        # Cari JS object
         match = re.search(r'window\.calendarComponentStates\s*=\s*(\{.*?\});', html, re.S)
         if not match:
-            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender di halaman")
+            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender")
 
-        raw_json = match.group(1)
+        raw_json = match.group(1).strip(";")
 
-        # Bersihkan trailing karakter dan parse JSON
-        # Ganti single quote -> double quote agar valid JSON
-        raw_json = raw_json.replace("'", '"')
-        data = json.loads(raw_json)
+        # Perbaiki key angka jadi string
+        raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)
 
-        # Ambil daftar hari dan event
-        days = data.get("1", {}).get("days", [])
+        try:
+            data = json.loads(raw_json)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Parse JSON gagal: {str(e)}")
+
+        if "1" not in data:
+            raise HTTPException(status_code=500, detail="Data hari ini (key '1') tidak ada")
+
+        calendar_data = data["1"]
         events = []
-        for day in days:
+        for day in calendar_data.get("days", []):
             for ev in day.get("events", []):
-                event_currency = ev.get("currency", "")
-                event_impact = ev.get("impactName", "")
-                if impact.lower() in event_impact.lower() and (not currencies or event_currency in currencies):
+                if impact.lower() in ev.get("impactName", "").lower() and (not currencies or ev.get("currency", "") in currencies):
                     events.append({
                         "date": day.get("date", ""),
                         "time": ev.get("timeLabel", ""),
-                        "currency": event_currency,
-                        "impact": event_impact,
+                        "currency": ev.get("currency", ""),
+                        "impact": ev.get("impactTitle", ""),
                         "event": ev.get("name", ""),
                         "forecast": ev.get("forecast", ""),
                         "actual": ev.get("actual", ""),
@@ -132,8 +138,8 @@ async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: 
         return {"status": "success", "events": events}
 
     except Exception as e:
-        print(f"Error scraping Forex Factory: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch economic calendar: {str(e)}")
+
 
 @app.get("/health")
 async def health_check():

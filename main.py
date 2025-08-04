@@ -99,6 +99,15 @@ def clean_json_string(raw_json):
         if raw_json.endswith(";"):
             raw_json = raw_json[:-1]
         
+        # Periksa apakah JSON dimulai dengan '{' - jika tidak, cari yang benar
+        if not raw_json.startswith('{'):
+            # Cari opening brace pertama
+            brace_pos = raw_json.find('{')
+            if brace_pos != -1:
+                raw_json = raw_json[brace_pos:]
+            else:
+                raise Exception("No opening brace found in JSON string")
+        
         # Hapus single line comments dengan lebih hati-hati
         lines = raw_json.split('\n')
         cleaned_lines = []
@@ -153,6 +162,17 @@ def clean_json_string(raw_json):
         # Remove extra quotes around already quoted strings
         raw_json = re.sub(r'""([^"]*?)""', r'"\1"', raw_json)
         
+        # Final check: pastikan dimulai dan diakhiri dengan brace yang benar
+        raw_json = raw_json.strip()
+        if not raw_json.startswith('{'):
+            raise Exception("Cleaned JSON does not start with opening brace")
+        
+        # Hitung brace untuk memastikan balanced
+        open_braces = raw_json.count('{')
+        close_braces = raw_json.count('}')
+        if open_braces != close_braces:
+            print(f"Warning: Unbalanced braces - open: {open_braces}, close: {close_braces}")
+        
         return raw_json
         
     except Exception as e:
@@ -160,26 +180,26 @@ def clean_json_string(raw_json):
 
 def extract_calendar_json_multiple_methods(html):
     """
-    Coba beberapa metode untuk ekstraksi data kalender
+    Coba beberapa metode untuk ekstraksi data kalender dengan perbaikan
     """
     methods = [
-        # Method 1: calendarComponentStates
+        # Method 1: calendarComponentStates[1] - yang paling spesifik
         {
-            'name': 'calendarComponentStates',
-            'pattern': r'window\.calendarComponentStates\s*=\s*({.*?});',
+            'name': 'calendarComponentStates[1]',
+            'pattern': r'window\.calendarComponentStates\[1\]\s*=\s*({.*?});',
             'flags': re.DOTALL
         },
-        # Method 2: cakgalVars
+        # Method 2: calendarComponentStates dengan index apapun
         {
-            'name': 'cakgalVars',
-            'pattern': r'var\s+cakgalVars\s*=\s*({.*?});',
+            'name': 'calendarComponentStates_indexed',
+            'pattern': r'window\.calendarComponentStates\[\d+\]\s*=\s*({.*?});',
             'flags': re.DOTALL
         },
-        # Method 3: calendar data in script tags
+        # Method 3: calendarComponentStates general
         {
-            'name': 'script_calendar',
-            'pattern': r'(?:calendar|events).*?=\s*({.*?});',
-            'flags': re.DOTALL | re.IGNORECASE
+            'name': 'calendarComponentStates_general',
+            'pattern': r'calendarComponentStates.*?=\s*({.*?});',
+            'flags': re.DOTALL
         }
     ]
     
@@ -188,14 +208,49 @@ def extract_calendar_json_multiple_methods(html):
             matches = re.findall(method['pattern'], html, method['flags'])
             if matches:
                 print(f"Found data using method: {method['name']}")
-                return matches[0], method['name']
+                # Take the first match that looks like valid JSON
+                for match in matches:
+                    if match.strip().startswith('{') and 'days' in match:
+                        return match, method['name']
         except Exception as e:
             print(f"Method {method['name']} failed: {e}")
             continue
     
-    # Method 4: Manual bracket matching for calendarComponentStates
+    # Method 4: Manual extraction dengan perbaikan
     try:
-        start_pattern = r'window\.calendarComponentStates\s*='
+        # Look for calendarComponentStates[1] specifically
+        start_pattern = r'window\.calendarComponentStates\[1\]\s*=\s*'
+        start_match = re.search(start_pattern, html)
+        
+        if start_match:
+            start_pos = start_match.end()
+            
+            # Find the opening brace
+            brace_start = html.find('{', start_pos)
+            if brace_start != -1:
+                # Use bracket counting to find the matching closing brace
+                brace_count = 0
+                pos = brace_start
+                
+                while pos < len(html):
+                    char = html[pos]
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            # Check if this is followed by semicolon (end of statement)
+                            next_pos = pos + 1
+                            while next_pos < len(html) and html[next_pos] in ' \n\t':
+                                next_pos += 1
+                            
+                            if next_pos < len(html) and html[next_pos] == ';':
+                                raw_json = html[brace_start:pos + 1]
+                                return raw_json, 'manual_bracket_matching_improved'
+                    pos += 1
+        
+        # Fallback: try to find any calendarComponentStates
+        start_pattern = r'window\.calendarComponentStates\s*\[\s*\d+\s*\]\s*=\s*'
         start_match = re.search(start_pattern, html)
         
         if start_match:
@@ -213,11 +268,17 @@ def extract_calendar_json_multiple_methods(html):
                     elif char == '}':
                         brace_count -= 1
                         if brace_count == 0:
-                            raw_json = html[brace_start:pos + 1]
-                            return raw_json, 'manual_bracket_matching'
+                            next_pos = pos + 1
+                            while next_pos < len(html) and html[next_pos] in ' \n\t':
+                                next_pos += 1
+                            
+                            if next_pos < len(html) and html[next_pos] == ';':
+                                raw_json = html[brace_start:pos + 1]
+                                return raw_json, 'manual_bracket_matching_fallback'
                     pos += 1
+                    
     except Exception as e:
-        print(f"Manual bracket matching failed: {e}")
+        print(f"Manual extraction failed: {e}")
     
     raise Exception("No calendar data found using any method")
 

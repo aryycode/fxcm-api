@@ -369,8 +369,23 @@ async def get_economic_calendar(currencies: Optional[str] = None, impact: str = 
                             event_impact = ev.get("impactTitle", ev.get("impact", "")).lower()
                             event_currency = ev.get("currency", "")
                             
-                            # Filter by impact
-                            if impact.lower() not in event_impact:
+                            # Debug: print event info
+                            print(f"Event: {ev.get('name', 'Unknown')}, Impact: '{event_impact}', Currency: '{event_currency}'")
+                            
+                            # Filter by impact - more flexible matching
+                            impact_match = False
+                            if impact.lower() == "all":
+                                impact_match = True
+                            elif impact.lower() in event_impact:
+                                impact_match = True
+                            elif impact.lower() == "high" and any(word in event_impact for word in ["high", "red"]):
+                                impact_match = True
+                            elif impact.lower() == "medium" and any(word in event_impact for word in ["medium", "orange", "yellow"]):
+                                impact_match = True
+                            elif impact.lower() == "low" and any(word in event_impact for word in ["low", "green"]):
+                                impact_match = True
+                            
+                            if not impact_match:
                                 continue
                             
                             # Filter by currency if specified
@@ -453,7 +468,7 @@ async def get_economic_calendar(currencies: Optional[str] = None, impact: str = 
 @app.get("/debug-calendar")
 async def debug_calendar():
     """
-    Endpoint untuk debugging ekstraksi data kalender
+    Endpoint untuk debugging ekstraksi data kalender dengan detail lebih lengkap
     """
     try:
         scraper = cloudscraper.create_scraper(delay=10)
@@ -478,40 +493,91 @@ async def debug_calendar():
             attempt_info = {
                 "method": method,
                 "raw_json_length": len(raw_json),
-                "raw_preview": raw_json[:200],
+                "raw_preview": raw_json[:500],  # Increased preview length
                 "status": "extracted"
             }
             
             try:
                 cleaned_json = clean_json_string(raw_json)
                 attempt_info["cleaned_json_length"] = len(cleaned_json)
-                attempt_info["cleaned_preview"] = cleaned_json[:200]
+                attempt_info["cleaned_preview"] = cleaned_json[:500]  # Increased preview length
                 
                 try:
                     parsed_data = json.loads(cleaned_json)
                     attempt_info["status"] = "success"
                     attempt_info["data_keys"] = list(parsed_data.keys()) if isinstance(parsed_data, dict) else "Not a dict"
+                    attempt_info["data_type"] = str(type(parsed_data))
                     
-                    # Look for calendar structure
-                    calendar_info = {}
+                    # Detailed structure analysis
+                    structure_info = {}
                     if isinstance(parsed_data, dict):
                         for key, value in parsed_data.items():
-                            if isinstance(value, dict) and 'days' in value:
-                                days = value.get('days', [])
-                                events_count = sum(len(day.get('events', [])) for day in days if isinstance(day, dict))
-                                calendar_info[key] = {
-                                    'days_count': len(days),
-                                    'events_count': events_count
-                                }
+                            structure_info[key] = {
+                                "type": str(type(value)),
+                                "length": len(value) if isinstance(value, (list, dict, str)) else "N/A"
+                            }
+                            
+                            # Check if this looks like calendar data
+                            if isinstance(value, dict):
+                                sub_keys = list(value.keys())[:10]  # First 10 keys
+                                structure_info[key]["sub_keys"] = sub_keys
+                                
+                                # Check for calendar-like structure
+                                if 'days' in value:
+                                    days = value.get('days', [])
+                                    structure_info[key]["days_count"] = len(days)
+                                    
+                                    # Sample first day structure
+                                    if days and isinstance(days, list) and len(days) > 0:
+                                        first_day = days[0]
+                                        if isinstance(first_day, dict):
+                                            structure_info[key]["first_day_keys"] = list(first_day.keys())
+                                            if 'events' in first_day:
+                                                events = first_day.get('events', [])
+                                                structure_info[key]["first_day_events_count"] = len(events)
+                                                
+                                                # Sample first event structure
+                                                if events and len(events) > 0:
+                                                    first_event = events[0]
+                                                    if isinstance(first_event, dict):
+                                                        structure_info[key]["first_event_keys"] = list(first_event.keys())
+                                                        structure_info[key]["first_event_sample"] = {k: str(v)[:50] for k, v in first_event.items()}
                     
-                    attempt_info["calendar_info"] = calendar_info
+                    attempt_info["structure_info"] = structure_info
+                    
+                    # Look for ALL possible calendar structures
+                    calendar_info = {}
+                    def find_calendar_data(obj, path=""):
+                        if isinstance(obj, dict):
+                            for key, value in obj.items():
+                                current_path = f"{path}.{key}" if path else key
+                                if isinstance(value, dict) and 'days' in value:
+                                    days = value.get('days', [])
+                                    events_count = 0
+                                    for day in days:
+                                        if isinstance(day, dict) and 'events' in day:
+                                            events_count += len(day.get('events', []))
+                                    
+                                    calendar_info[current_path] = {
+                                        'days_count': len(days),
+                                        'events_count': events_count,
+                                        'sample_day_keys': list(days[0].keys()) if days and isinstance(days[0], dict) else []
+                                    }
+                                elif isinstance(value, (dict, list)):
+                                    find_calendar_data(value, current_path)
+                        elif isinstance(obj, list):
+                            for i, item in enumerate(obj[:5]):  # Check first 5 items
+                                find_calendar_data(item, f"{path}[{i}]")
+                    
+                    find_calendar_data(parsed_data)
+                    attempt_info["all_calendar_structures"] = calendar_info
                     
                 except json.JSONDecodeError as e:
                     attempt_info["status"] = "json_error"
                     attempt_info["json_error"] = str(e)
                     attempt_info["error_pos"] = e.pos
                     if e.pos < len(cleaned_json):
-                        attempt_info["error_context"] = cleaned_json[max(0, e.pos-50):e.pos+50]
+                        attempt_info["error_context"] = cleaned_json[max(0, e.pos-100):e.pos+100]
                 
             except Exception as clean_error:
                 attempt_info["status"] = "cleaning_error"
@@ -526,25 +592,40 @@ async def debug_calendar():
                 "error": str(extraction_error)
             })
         
-        # Check for HTML table fallback possibility
-        table_pattern = r'<tr[^>]*class[^>]*calendar_row[^>]*>'
-        table_matches = len(re.findall(table_pattern, html))
-        debug_info["html_table_rows_found"] = table_matches
-        
-        # Check for specific patterns
-        patterns = [
-            r'window\.calendarComponentStates',
-            r'var\s+cakgalVars',
-            r'calendar.*data',
-            r'events.*\[',
+        # Enhanced HTML table analysis
+        table_patterns = [
+            r'<tr[^>]*class[^>]*calendar_row[^>]*>',
+            r'<tr[^>]*calendar[^>]*>',
+            r'<div[^>]*class[^>]*event[^>]*>',
+            r'data-event[^>]*>',
+            r'class[^>]*currency[^>]*>'
         ]
         
-        pattern_matches = {}
-        for pattern in patterns:
-            matches = len(re.findall(pattern, html, re.IGNORECASE))
-            pattern_matches[pattern] = matches
+        table_analysis = {}
+        for pattern in table_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            table_analysis[pattern] = {
+                "count": len(matches),
+                "samples": matches[:3] if matches else []
+            }
         
-        debug_info["patterns_found"] = pattern_matches
+        debug_info["html_table_analysis"] = table_analysis
+        
+        # Look for any JavaScript variables that might contain calendar data
+        js_var_patterns = [
+            r'var\s+(\w+)\s*=\s*\{[^}]*calendar[^}]*\}',
+            r'window\.(\w+)\s*=\s*\{[^}]*calendar[^}]*\}',
+            r'(\w+)\s*=\s*\{[^}]*days[^}]*\}',
+            r'(\w+)\s*=\s*\{[^}]*events[^}]*\}'
+        ]
+        
+        js_variables = {}
+        for pattern in js_var_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            if matches:
+                js_variables[pattern] = matches[:5]  # First 5 matches
+        
+        debug_info["js_variables_found"] = js_variables
         
         return {"status": "success", "debug_info": debug_info}
         
@@ -586,6 +667,50 @@ async def test_scraper():
             "html_preview": response.text[:1000]
         }
         
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+@app.get("/raw-calendar-data")
+async def get_raw_calendar_data():
+    """
+    Endpoint untuk melihat raw data yang diekstrak dari ForexFactory
+    """
+    try:
+        scraper = cloudscraper.create_scraper(delay=10)
+        url = "https://www.forexfactory.com/calendar"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = scraper.get(url, headers=headers, timeout=30)
+        html = response.text
+        
+        try:
+            raw_json, method = extract_calendar_json_multiple_methods(html)
+            cleaned_json = clean_json_string(raw_json)
+            parsed_data = json.loads(cleaned_json)
+            
+            return {
+                "status": "success",
+                "extraction_method": method,
+                "raw_json_preview": raw_json[:1000],
+                "cleaned_json_preview": cleaned_json[:1000],
+                "parsed_data": parsed_data,
+                "data_summary": {
+                    "type": str(type(parsed_data)),
+                    "keys": list(parsed_data.keys()) if isinstance(parsed_data, dict) else "Not a dict",
+                    "length": len(parsed_data) if isinstance(parsed_data, (list, dict)) else "N/A"
+                }
+            }
+            
+        except Exception as e:
+            return {
+                "status": "error",
+                "error": str(e),
+                "html_length": len(html),
+                "html_preview": html[:1000]
+            }
+            
     except Exception as e:
         return {"status": "error", "error": str(e)}
 

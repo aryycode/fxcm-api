@@ -4,8 +4,8 @@ from forexconnect import ForexConnect
 import datetime
 import json
 from typing import Optional, List
-import cloudscraper
-from bs4 import BeautifulSoup
+import requests
+import re
 
 app = FastAPI(title="Forex Data & Calendar API", description="Ambil data forex multi-timeframe + kalender ekonomi")
 
@@ -54,9 +54,7 @@ async def root():
 
 @app.post("/get-forex-data")
 async def get_forex_data(request: ForexRequest):
-    """
-    Endpoint untuk mengambil data forex multi timeframe
-    """
+    """Ambil data forex multi-timeframe"""
     try:
         with ForexConnect() as fx:
             print(f"Connecting to {request.connection} account...")
@@ -85,12 +83,9 @@ async def get_forex_data(request: ForexRequest):
                 "M1": get_history(fx, request.instrument, "m1", request.candles_m1)
             }
 
-            print(f"Fetched data for {request.instrument}")
-            
             return {"status": "success", "data": data}
 
     except Exception as e:
-        print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch forex data: {str(e)}")
     
     finally:
@@ -101,48 +96,50 @@ async def get_forex_data(request: ForexRequest):
             print(f"Error during logout: {str(e)}")
 
 # ==========================
-# Forex Factory Scraper Section
+# Forex Factory Calendar Section
 # ==========================
 @app.get("/get-economic-calendar")
 async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
     """
-    Scrape kalender ekonomi dari Forex Factory
-    :param currencies: List mata uang yang difilter (contoh: ["USD", "EUR"])
-    :param impact: Level impact (Low, Medium, High)
+    Ambil data kalender ekonomi dari Forex Factory (via JS object)
+    :param currencies: ["USD","EUR"]
+    :param impact: High / Medium / Low
     """
     try:
-        scraper = cloudscraper.create_scraper()
         url = "https://www.forexfactory.com/calendar"
-        html = scraper.get(url).text
-        soup = BeautifulSoup(html, 'html.parser')
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers)
+        html = response.text
 
-        events = []
-        rows = soup.select('tr.calendar__row')
-        for row in rows:
-            time = row.select_one('td.calendar__time')
-            currency = row.select_one('td.calendar__currency')
-            impact_elem = row.select_one('td.calendar__impact span')
-            event = row.select_one('td.calendar__event')
-            forecast = row.select_one('td.calendar__forecast')
-            actual = row.select_one('td.calendar__actual')
+        # Cari JS object window.calendarComponentStates
+        match = re.search(r'window\.calendarComponentStates\s*=\s*({.*});', html)
+        if not match:
+            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender")
 
-            if currency and impact_elem:
-                event_impact = impact_elem.get('title', '')  # impact level dari attribute
-                event_currency = currency.text.strip()
+        raw_json = match.group(1)
+        # Perbaiki key supaya bisa parse
+        raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)  # ubah key angka ke string
+        data = json.loads(raw_json)
+
+        today_events = []
+        for day in data["1"]["days"]:
+            for ev in day.get("events", []):
+                event_currency = ev.get("currency", "")
+                event_impact = ev.get("impactTitle", "")
                 if impact in event_impact and (not currencies or event_currency in currencies):
-                    events.append({
-                        "time": time.text.strip() if time else "",
+                    today_events.append({
+                        "time": ev.get("timeLabel", ""),
                         "currency": event_currency,
                         "impact": event_impact,
-                        "event": event.text.strip() if event else "",
-                        "forecast": forecast.text.strip() if forecast else "",
-                        "actual": actual.text.strip() if actual else ""
+                        "event": ev.get("name", ""),
+                        "forecast": ev.get("forecast", ""),
+                        "actual": ev.get("actual", ""),
+                        "date": ev.get("date", "")
                     })
 
-        return {"status": "success", "events": events}
+        return {"status": "success", "events": today_events}
 
     except Exception as e:
-        print(f"Error scraping Forex Factory: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch economic calendar: {str(e)}")
 
 @app.get("/health")

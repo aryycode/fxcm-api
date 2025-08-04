@@ -102,38 +102,34 @@ async def get_forex_data(request: ForexRequest):
 async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
     """
     Ambil data kalender ekonomi dari Forex Factory (via JS object)
-    :param currencies: ["USD","EUR"]
-    :param impact: High / Medium / Low
     """
     try:
-        scraper = cloudscraper.create_scraper()
+        scraper = cloudscraper.create_scraper(delay=10, browser='chrome')
         url = "https://www.forexfactory.com/calendar"
-        html = scraper.get(url).text
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        html = scraper.get(url, headers=headers).text
 
-        # Debug: cek apakah kita dapat data
         if "calendarComponentStates" not in html:
-            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender (mungkin Cloudflare block)")
+            print(html[:2000])  # Debug: lihat jika Cloudflare block
+            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender (Cloudflare block?)")
 
-        # Cari JS object window.calendarComponentStates
         match = re.search(r'window\.calendarComponentStates\s*=\s*({.*?});', html, re.S)
         if not match:
-            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender")
+            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender (regex gagal)")
 
         raw_json = match.group(1)
-        # Ubah key angka ke string agar valid JSON
         raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)
 
-        try:
-            data = json.loads(raw_json)
-        except json.JSONDecodeError as e:
-            raise HTTPException(status_code=500, detail=f"Gagal parse JSON: {str(e)}")
-
+        data = json.loads(raw_json)
         today_events = []
         for day in data["1"]["days"]:
             for ev in day.get("events", []):
                 event_currency = ev.get("currency", "")
                 event_impact = ev.get("impactTitle", "")
-                if impact in event_impact and (not currencies or event_currency in currencies):
+                if impact.lower() in event_impact.lower() and (not currencies or event_currency in currencies):
                     today_events.append({
                         "time": ev.get("timeLabel", ""),
                         "currency": event_currency,

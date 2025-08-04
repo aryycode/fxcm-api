@@ -89,63 +89,51 @@ async def get_forex_data(request: ForexRequest):
 # ==========================
 @app.get("/get-economic-calendar")
 async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
+    """
+    Ambil data kalender ekonomi dari ForexFactory (dari script JSON di halaman).
+    Filter by currencies (contoh: USD, GBP) dan impact level (Low, Medium, High).
+    """
     try:
-        scraper = cloudscraper.create_scraper(delay=10, browser='chrome')
+        scraper = cloudscraper.create_scraper()
         url = "https://www.forexfactory.com/calendar"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-        html = scraper.get(url, headers=headers).text
+        html = scraper.get(url).text
 
-        # Save HTML for debug
-        os.makedirs("debug", exist_ok=True)
-        with open("debug/forexfactory.html", "w", encoding="utf-8") as f:
-            f.write(html)
-
-        if "calendarComponentStates" not in html:
-            return {"status": "error", "message": "Cloudflare or no data", "debug_file": "debug/forexfactory.html"}
-
-        match = re.search(r'window\.calendarComponentStates\s*=\s*({.*?});', html, re.S)
+        # Cari JSON dari script menggunakan regex
+        match = re.search(r'window\.calendarComponentStates\s*=\s*(\{.*?\});', html, re.S)
         if not match:
-            return {"status": "error", "message": "Regex gagal", "debug_file": "debug/forexfactory.html"}
+            raise HTTPException(status_code=500, detail="Tidak menemukan data kalender di halaman")
 
         raw_json = match.group(1)
-        raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)
 
-        # Save raw JSON for debug
-        with open("debug/raw_calendar.json", "w", encoding="utf-8") as f:
-            f.write(raw_json)
+        # Bersihkan trailing karakter dan parse JSON
+        # Ganti single quote -> double quote agar valid JSON
+        raw_json = raw_json.replace("'", '"')
+        data = json.loads(raw_json)
 
-        try:
-            parsed = json.loads(raw_json)
-        except Exception as e:
-            return {"status": "error", "message": f"Parse JSON gagal: {str(e)}", "debug_file": "debug/raw_calendar.json"}
-
-        if "1" not in parsed:
-            return {"status": "error", "message": "Key '1' tidak ada", "debug_file": "debug/raw_calendar.json"}
-
-        calendar_data = parsed["1"]
-        today_events = []
-        for day in calendar_data.get("days", []):
+        # Ambil daftar hari dan event
+        days = data.get("1", {}).get("days", [])
+        events = []
+        for day in days:
             for ev in day.get("events", []):
                 event_currency = ev.get("currency", "")
-                event_impact = ev.get("impactTitle", "")
+                event_impact = ev.get("impactName", "")
                 if impact.lower() in event_impact.lower() and (not currencies or event_currency in currencies):
-                    today_events.append({
+                    events.append({
+                        "date": day.get("date", ""),
                         "time": ev.get("timeLabel", ""),
                         "currency": event_currency,
                         "impact": event_impact,
                         "event": ev.get("name", ""),
                         "forecast": ev.get("forecast", ""),
                         "actual": ev.get("actual", ""),
-                        "date": ev.get("date", "")
+                        "previous": ev.get("previous", "")
                     })
 
-        return {"status": "success", "events": today_events, "debug_files": ["debug/forexfactory.html", "debug/raw_calendar.json"]}
+        return {"status": "success", "events": events}
 
     except Exception as e:
-        return {"status": "error", "message": f"Exception: {str(e)}"}
+        print(f"Error scraping Forex Factory: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch economic calendar: {str(e)}")
 
 @app.get("/health")
 async def health_check():

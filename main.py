@@ -479,36 +479,76 @@ async def get_economic_calendar(currencies: Optional[str] = None, impact: str = 
             print(f"JSON extraction failed: {json_error}")
             events = []
         
-        # If JSON parsing failed, try HTML table parsing as fallback
+        # If no events found yet, try HTML table parsing as fallback
         if not events:
             print("Falling back to HTML table parsing...")
             try:
                 events = parse_html_table_fallback(html)
                 print(f"Found {len(events)} events from HTML parsing")
-                
-                # Apply filters to HTML-parsed events
-                if currency_list or impact != "High":
-                    filtered_events = []
-                    for event in events:
-                        event_impact = event.get("impact", "").lower()
-                        event_currency = event.get("currency", "")
-                        
-                        # Filter by impact
-                        if impact.lower() not in event_impact and impact.lower() != "all":
-                            continue
-                        
-                        # Filter by currency if specified
-                        if currency_list and event_currency not in currency_list:
-                            continue
-                        
-                        filtered_events.append(event)
-                    
-                    events = filtered_events
-                    print(f"After filtering: {len(events)} events")
-            
             except Exception as html_error:
                 print(f"HTML parsing also failed: {html_error}")
-                raise HTTPException(status_code=500, detail=f"Both JSON and HTML parsing failed. JSON error: {json_error}, HTML error: {html_error}")
+        
+        # Apply filters to all events
+        if events and (currency_list or impact != "all"):
+            print(f"Applying filters - currencies: {currency_list}, impact: {impact}")
+            filtered_events = []
+            for event in events:
+                event_impact = event.get("impact", "").lower()
+                event_currency = event.get("currency", "")
+                
+                # Filter by impact
+                impact_match = False
+                if impact.lower() == "all":
+                    impact_match = True
+                elif impact.lower() in event_impact:
+                    impact_match = True
+                elif impact.lower() == "high" and any(word in event_impact for word in ["high", "red"]):
+                    impact_match = True
+                elif impact.lower() == "medium" and any(word in event_impact for word in ["medium", "orange", "yellow"]):
+                    impact_match = True
+                elif impact.lower() == "low" and any(word in event_impact for word in ["low", "green", "yel"]):
+                    impact_match = True
+                elif impact.lower() == "non-economic" and any(word in event_impact for word in ["non-economic", "holiday", "gra"]):
+                    impact_match = True
+                
+                if not impact_match:
+                    print(f"Event filtered out by impact: {event.get('event', 'Unknown')} - {event_impact}")
+                    continue
+                
+                # Filter by currency if specified
+                if currency_list and event_currency not in currency_list:
+                    print(f"Event filtered out by currency: {event.get('event', 'Unknown')} - {event_currency}")
+                    continue
+                
+                filtered_events.append(event)
+            
+            events = filtered_events
+            print(f"After filtering: {len(events)} events")
+        
+        # If still no events, provide debug info
+        if not events:
+            print("No events found after all attempts")
+            # Return debug info
+            return {
+                "status": "success", 
+                "events": [],
+                "total_events": 0,
+                "debug_info": {
+                    "html_length": len(html),
+                    "raw_json_found": 'raw_json' in locals(),
+                    "raw_json_length": len(raw_json) if 'raw_json' in locals() else 0,
+                    "extraction_method": method if 'method' in locals() else "none",
+                    "data_event_rows": len(re.findall(r'data-event-id=', html)),
+                    "filters_applied": {
+                        "currencies": currency_list,
+                        "impact": impact
+                    }
+                },
+                "filters": {
+                    "currencies": currency_list,
+                    "impact": impact
+                }
+            }
         
         return {
             "status": "success", 

@@ -89,9 +89,6 @@ async def get_forex_data(request: ForexRequest):
 # ==========================
 @app.get("/get-economic-calendar")
 async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: str = "High"):
-    """
-    Ambil data kalender ekonomi ForexFactory dari window.calendarComponentStates
-    """
     try:
         scraper = cloudscraper.create_scraper(delay=10, browser='chrome')
         url = "https://www.forexfactory.com/calendar"
@@ -101,23 +98,29 @@ async def get_economic_calendar(currencies: Optional[List[str]] = None, impact: 
         }
         html = scraper.get(url, headers=headers).text
 
-        # Cari JS object
-        match = re.search(r'window\.calendarComponentStates\s*=\s*(\{.*?\});', html, re.S)
+        match = re.search(r'window\.calendarComponentStates\s*=\s*(\{.*\});', html, re.S)
         if not match:
             raise HTTPException(status_code=500, detail="Tidak menemukan data kalender")
 
-        raw_json = match.group(1).strip(";")
+        raw_json = match.group(1)
 
-        # Perbaiki key angka jadi string
+        # Bersihkan trailing semicolon
+        if raw_json.endswith(";"):
+            raw_json = raw_json[:-1]
+
+        # Ubah key angka ke string
         raw_json = re.sub(r'(\d+):', r'"\1":', raw_json)
 
-        try:
-            data = json.loads(raw_json)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Parse JSON gagal: {str(e)}")
+        # Potong sampai curly brace terakhir
+        last_brace = raw_json.rfind("}")
+        if last_brace != -1:
+            raw_json = raw_json[:last_brace+1]
+
+        # Parse JSON
+        data = json.loads(raw_json)
 
         if "1" not in data:
-            raise HTTPException(status_code=500, detail="Data hari ini (key '1') tidak ada")
+            raise HTTPException(status_code=500, detail="Data hari ini tidak ditemukan (key '1')")
 
         calendar_data = data["1"]
         events = []

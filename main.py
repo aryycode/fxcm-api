@@ -815,6 +815,59 @@ async def get_raw_calendar_data():
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+@app.get("/inspect-html")
+async def inspect_html():
+    """
+    Endpoint untuk melihat HTML yang diterima dari ForexFactory
+    """
+    try:
+        scraper = cloudscraper.create_scraper(delay=10)
+        url = "https://www.forexfactory.com/calendar"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        
+        response = scraper.get(url, headers=headers, timeout=30)
+        html = response.text
+        
+        # Check for various indicators
+        indicators = {
+            "html_length": len(html),
+            "response_status": response.status_code,
+            "contains_calendar": "calendar" in html.lower(),
+            "contains_events": "event" in html.lower(),
+            "contains_cloudflare": "cloudflare" in html.lower(),
+            "contains_checking_browser": "checking your browser" in html.lower(),
+            "contains_javascript_disabled": "javascript" in html.lower(),
+            "data_event_count": len(re.findall(r'data-event-id=', html)),
+            "calendar_component_states": "calendarComponentStates" in html,
+            "table_rows": len(re.findall(r'<tr', html, re.IGNORECASE)),
+            "script_tags": len(re.findall(r'<script', html, re.IGNORECASE))
+        }
+        
+        # Get sample of HTML content
+        html_sample = {
+            "first_1000": html[:1000],
+            "contains_head": "<head>" in html,
+            "contains_body": "<body>" in html,
+            "title": re.search(r'<title>(.*?)</title>', html, re.IGNORECASE).group(1) if re.search(r'<title>(.*?)</title>', html, re.IGNORECASE) else "No title found"
+        }
+        
+        return {
+            "status": "success",
+            "indicators": indicators,
+            "html_sample": html_sample,
+            "response_headers": dict(response.headers)
+        }
+        
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}

@@ -1,6 +1,6 @@
 # Forex Data API
 
-FastAPI service untuk mengambil data forex multi-timeframe menggunakan ForexConnect. API ini dapat digunakan untuk mengambil data historis dari berbagai instrumen forex dengan parameter yang dapat disesuaikan.
+FastAPI service untuk mengambil data forex multi-timeframe menggunakan ForexConnect dari FXCM. API ini dapat digunakan untuk mengambil data historis dari berbagai instrumen forex dengan parameter yang dapat disesuaikan.
 
 ## 🚀 Features
 

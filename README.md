@@ -1,11 +1,12 @@
-# Forex Data API
+# Forex and Economic Calendar API
 
-FastAPI service untuk mengambil data forex multi-timeframe menggunakan ForexConnect. API ini dapat digunakan untuk mengambil data historis dari berbagai instrumen forex dengan parameter yang dapat disesuaikan.
+FastAPI service untuk mengambil data forex multi-timeframe dan informasi economic calendar. API ini dapat digunakan untuk mengambil data historis dari berbagai instrumen forex dan event ekonomi dengan parameter yang dapat disesuaikan.
 
 ## 🚀 Features
 
-- ✅ Multi-timeframe data (Daily, H1, M15)
-- ✅ Dynamic parameters (username, password, instrument, dll)
+- ✅ Multi-timeframe forex data (Daily, H1, M15)
+- ✅ Economic calendar data dengan multiple fallback sources
+- ✅ Dynamic parameters (username, password, instrument, currencies, impact level, dll)
 - ✅ RESTful API dengan FastAPI
 - ✅ Docker support
 - ✅ Health check endpoint
@@ -28,17 +29,26 @@ git clone <your-repo-url>
 cd forex-api
 ```
 
-2. Install dependencies:
+2. Create and activate virtual environment:
+```bash
+python -m venv venv
+venv\Scripts\activate  # Windows
+source venv/bin/activate  # Linux/Mac
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Run aplikasi:
+4. Run aplikasi:
 ```bash
-python main.py
+python server.py  # For the full API with economic calendar
+# OR
+python main.py    # For the original forex data API only
 ```
 
-API akan berjalan di `http://localhost:9898`
+API akan berjalan di `http://localhost:8000` (server.py) atau `http://localhost:9898` (main.py)
 
 ### Docker Deployment
 
@@ -49,8 +59,109 @@ docker build -t forex-api .
 
 2. Run container:
 ```bash
+docker run -d -p 8000:8000 --name forex-api forex-api
+```
+
+## 📊 API Endpoints
+
+### Forex Data
+
+```
+POST /get-forex-data
+```
+
+Request body:
+```json
+{
+  "symbol": "EUR/USD",
+  "timeframe": "1h",
+  "count": 100
+}
+```
+
+### Economic Calendar
+
+```
+GET /get-economic-calendar?currencies=USD,EUR&impact=High
+```
+
+Parameters:
+- `currencies` (optional): Comma-separated list of currency codes to filter events (e.g., "USD,EUR,GBP")
+- `impact` (optional, default="High"): Impact level filter ("High", "Medium", "Low", or "All")
+
+Response example:
+```json
+{
+  "status": "success",
+  "events": [
+    {
+      "date": "2023-08-05",
+      "time": "08:30",
+      "currency": "USD",
+      "impact": "High",
+      "event": "Non-Farm Payrolls",
+      "forecast": "200K",
+      "actual": "",
+      "previous": "187K"
+    }
+  ],
+  "total_events": 1,
+  "source": "investing.com",
+  "filters": {
+    "currencies": ["USD", "EUR"],
+    "impact": "High"
+  }
+}
+```
+
+### Debug Endpoints
+
+```
+GET /debug-calendar
+```
+
+Returns debug information about all calendar data sources.
+
+```
+GET /test-scraper
+```
+
+Simple endpoint to verify the API is working correctly.
+```
+
+### Original API
+
+```bash
 docker run -p 9898:9898 forex-api
 ```
+
+## 🏗️ Solution Architecture
+
+### Economic Calendar
+
+The economic calendar API implements a multi-layered approach to data retrieval:
+
+1. **Primary Source**: Attempts to fetch data from Investing.com API
+2. **Secondary Source**: Falls back to MarketAux API if primary source fails
+3. **Fallback Mechanism**: Generates realistic mocked data if both external sources fail
+
+This ensures that the API always returns useful data, even when external services are unavailable or rate-limited.
+
+## 🔧 Troubleshooting
+
+### 403 Forbidden Errors
+
+If you encounter 403 Forbidden errors when accessing external APIs, this may be due to:
+
+- Rate limiting by the data provider
+- IP address blocking
+- Changes in the provider's API or access policies
+
+The fallback mechanisms should automatically handle these cases by switching to alternative data sources or mocked data.
+
+### API Key Configuration
+
+To use the MarketAux API as an alternative data source, replace `YOUR_API_KEY` in the `fetch_alternative_calendar` function with your actual API key in the `server.py` file.
 
 ### EasyPanel Deployment
 
